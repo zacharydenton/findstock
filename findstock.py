@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-import os
 import csv
 import glob
 import decimal
@@ -10,7 +9,7 @@ import sqlalchemy as sa
 
 EST = pytz.timezone("America/New_York")
 
-engine = sa.create_engine("sqlite:///findstock.db", echo=True)
+engine = sa.create_engine("postgresql+psycopg2://findstock_dev@localhost/findstock_dev", echo=True)
 metadata = sa.MetaData()
 symbols = sa.Table("symbols", metadata,
                    sa.Column("id", sa.Integer, primary_key=True),
@@ -34,7 +33,7 @@ def parse_stock_lists():
 
 
 def insert_all_symbols(conn):
-    query = sa.select([sa.func.count(symbols)])
+    query = sa.select([sa.func.count(symbols.c.id)])
     count = conn.execute(query).fetchone()[0]
     if count > 0:
         return
@@ -53,18 +52,27 @@ def download_all_historical_data(conn):
 
 
 def download_historical_data(conn, symbol_id, symbol):
-    query = sa.select([sa.func.count(prices)]).where(prices.c.symbol_id == symbol_id)
+    query = sa.select([sa.func.count(prices.c.id)]).where(prices.c.symbol_id == symbol_id)
     count = conn.execute(query).fetchone()[0]
     if count > 0:
         return
 
-    stock = yahoo_finance.Share(symbol)
+    try:
+        stock = yahoo_finance.Share(symbol)
+    except:
+        return
+
     info = stock.get_info()
+    if 'start' not in info:
+        print(info)
+        return
+
     try:
         history = stock.get_historical(info['start'], info['end'])
     except ValueError:
+        start_date = datetime.date(int(info['start'].split('-')[0]), 1, 1).strftime("%Y-%m-%d")
         end_date = datetime.date.today().strftime("%Y-%m-%d")
-        history = stock.get_historical(info['start'], end_date)
+        history = stock.get_historical(start_date, end_date)
 
     inserts = []
     for point in history:
