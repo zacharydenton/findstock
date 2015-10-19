@@ -1,15 +1,26 @@
 #!/usr/bin/env python
+import os
 import csv
 import glob
+import decimal
+import datetime
+import pytz
+import yahoo_finance
 import sqlalchemy as sa
 
+EST = pytz.timezone("America/New_York")
 
 engine = sa.create_engine("sqlite:///findstock.db", echo=True)
 metadata = sa.MetaData()
 symbols = sa.Table("symbols", metadata,
                    sa.Column("id", sa.Integer, primary_key=True),
-                   sa.Column("symbol", sa.String, unique=True, index=True),
+                   sa.Column("symbol", sa.String, unique=True, index=True, nullable=False),
                    sa.Column("name", sa.String))
+prices = sa.Table("prices", metadata,
+                  sa.Column("id", sa.Integer, primary_key=True),
+                  sa.Column("symbol_id", None, sa.ForeignKey("symbols.id"), index=True, nullable=False),
+                  sa.Column("time", sa.DateTime(timezone=True), index=True, nullable=False),
+                  sa.Column("price", sa.Numeric(asdecimal=True), nullable=False))
 metadata.create_all(engine)
 
 
@@ -22,13 +33,63 @@ def parse_stock_lists():
                 yield row[:2]
 
 
-def main():
-    conn = engine.connect()
+def insert_all_symbols(conn):
+    query = sa.select([sa.func.count(symbols)])
+    count = conn.execute(query).fetchone()[0]
+    if count > 0:
+        return
+
     stocks = dict(parse_stock_lists())
     inserts = []
     for symbol, name in stocks.items():
         inserts.append({"symbol": symbol, "name": name})
     conn.execute(symbols.insert(), inserts)
+
+
+def download_all_historical_data(conn):
+    query = sa.select([symbols.c.id, symbols.c.symbol])
+    for row in conn.execute(query):
+        download_historical_data(conn, row[0], row[1])
+
+
+def download_historical_data(conn, symbol_id, symbol):
+    query = sa.select([sa.func.count(prices)]).where(prices.c.symbol_id == symbol_id)
+    count = conn.execute(query).fetchone()[0]
+    if count > 0:
+        return
+
+    stock = yahoo_finance.Share(symbol)
+    info = stock.get_info()
+    try:
+        history = stock.get_historical(info['start'], info['end'])
+    except ValueError:
+        end_date = datetime.date.today().strftime("%Y-%m-%d")
+        history = stock.get_historical(info['start'], end_date)
+
+    inserts = []
+    for point in history:
+        date = datetime.datetime.strptime(point["Date"], "%Y-%m-%d").date()
+        open_time = datetime.datetime.combine(date, datetime.time(9, 30, tzinfo=EST))
+        close_time = datetime.datetime.combine(date, datetime.time(16, tzinfo=EST))
+        open_price = decimal.Decimal(point["Open"])
+        close_price = decimal.Decimal(point["Close"])
+        inserts.append({
+            "symbol_id": symbol_id,
+            "time": open_time,
+            "price": open_price
+        })
+        inserts.append({
+            "symbol_id": symbol_id,
+            "time": close_time,
+            "price": close_price
+        })
+    conn.execute(prices.insert(), inserts)
+
+
+def main():
+    conn = engine.connect()
+    insert_all_symbols(conn)
+    download_all_historical_data(conn)
 
 if __name__ == "__main__":
     main()
