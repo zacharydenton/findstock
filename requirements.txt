@@ -1,2 +1,5 @@
 googlefinance
 yahoo-finance
+pytz
+sqlalchemy
+psycopg2cffi
